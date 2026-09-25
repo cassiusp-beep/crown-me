@@ -20,6 +20,12 @@ const CROP_PADDING = 0.4; // extra margin around the face crop (40% matched the 
 const CROP_SIZE = 224; // Teachable Machine image models take 224x224 input
 const MAX_EDGE = 1600; // big phone photos are scaled down to this long edge for speed
 
+// Webcam timing: landmarks run every frame, but the classifiers are slower, so they run less often
+const CLASSIFY_EVERY_MS = 400;
+const POSE_EVERY_MS = 1000;
+const SMOOTHING = 0.5; // how much each new webcam prediction counts vs. the running average
+const CROWN_OFF_THRESHOLD = CROWN_THRESHOLD - 0.1; // a crown stays on until P(Cassius) drops below this
+
 // Landmark indices on MediaPipe's 478-point face mesh
 const LM = { forehead: 10, rightEye: 33, leftEye: 263, rightSide: 234, leftSide: 454 };
 
@@ -44,11 +50,19 @@ const els = {
   results: $("results"),
   faceList: $("face-list"),
   poseResult: $("pose-result"),
+  tabUpload: $("tab-upload"),
+  tabWebcam: $("tab-webcam"),
+  uploadPanel: $("upload-panel"),
+  webcamPanel: $("webcam-panel"),
+  cameraBtn: $("camera-btn"),
+  captureBtn: $("capture-btn"),
+  video: $("video"),
 };
 const ctx = els.canvas.getContext("2d");
 
 let faceLandmarker, imageModel, poseModel;
 let runId = 0; // lets a newer upload cancel an older one that's still running
+let landmarkerMode = "IMAGE"; // FaceLandmarker needs "IMAGE" for photos and "VIDEO" for the webcam
 
 function setStatus(message, isError = false) {
   els.status.textContent = message;
@@ -97,6 +111,7 @@ async function loadModels() {
     els.loading.hidden = true;
     els.fileInput.disabled = false;
     els.dropzone.classList.remove("is-disabled");
+    els.cameraBtn.disabled = false;
     setStatus("Ready. Choose a photo to get started.");
   } catch (err) {
     console.error(err);
@@ -159,6 +174,8 @@ async function handleFile(file) {
   if (myRun !== runId) return;
 
   try {
+    await useLandmarkerMode("IMAGE");
+    if (myRun !== runId) return;
     const faces = detectFaces(source);
     const classified = [];
     for (const face of faces) classified.push(await classifyFace(source, face));
@@ -180,6 +197,13 @@ async function handleFile(file) {
     console.error(err);
     setStatus("Something went wrong while analyzing that photo. Try another one.", true);
   }
+}
+
+// One FaceLandmarker serves both modes; switch its running mode only when it changes
+async function useLandmarkerMode(mode) {
+  if (landmarkerMode === mode) return;
+  await faceLandmarker.setOptions({ runningMode: mode });
+  landmarkerMode = mode;
 }
 
 // ---------- Step 2: Find every face with MediaPipe FaceLandmarker ----------
@@ -233,12 +257,16 @@ function canonicalLabel(raw) {
   return raw.replace(/\.\.\.$/, "");
 }
 
-async function classifyFace(source, face) {
-  const crop = cropFace(source, face.box);
+async function predictCrop(crop) {
   const predictions = await imageModel.predict(crop);
   const probs = { cassius_happy: 0, cassius_neutral: 0, not_cassius: 0 };
   for (const p of predictions) probs[canonicalLabel(p.className)] = p.probability;
-  return { ...face, crop, probs };
+  return probs;
+}
+
+async function classifyFace(source, face) {
+  const crop = cropFace(source, face.box);
+  return { ...face, crop, probs: await predictCrop(crop) };
 }
 
 function topClass(probs) {
@@ -435,8 +463,12 @@ const pct = (p) => `${Math.round(p * 100)}%`;
 function showResults(faces, pose) {
   els.faceList.replaceChildren(
     ...faces.map((face, i) => {
-      const [label, probability] = topClass(face.probs);
       const li = document.createElement("li");
+      if (!face.probs) {
+        li.textContent = `Face ${i + 1}: checking…`;
+        return li;
+      }
+      const [label, probability] = topClass(face.probs);
       if (DEBUG && face.crop) {
         face.crop.className = "face-thumb";
         li.append(face.crop);
@@ -466,6 +498,210 @@ function showResults(faces, pose) {
     : "Pose: no body detected";
   els.results.hidden = false;
 }
+
+// ---------- Live webcam mode ----------
+// Same pipeline as photos, run on video frames. Face landmarks run every frame so crowns follow
+// your head smoothly; the face and pose classifiers run a few times a second, and each face's
+// predictions are averaged over time so the crown doesn't flicker on and off.
+const cam = {
+  stream: null,
+  running: false,
+  frozen: false,
+  raf: 0,
+  tracks: [], // one entry per face being followed: position, averaged probs, crown color
+  pose: null,
+  lastClassify: 0,
+  lastPose: 0,
+  classifyBusy: false,
+  poseBusy: false,
+};
+
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    setStatus("The webcam needs a secure page: open this over https:// or on localhost.", true);
+    return;
+  }
+  els.cameraBtn.disabled = true;
+  setStatus("Asking for camera permission…");
+  try {
+    cam.stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: false,
+    });
+  } catch (err) {
+    els.cameraBtn.disabled = false;
+    const messages = {
+      NotAllowedError: "Camera permission was blocked. Allow it in your browser's site settings and try again.",
+      NotFoundError: "No camera found on this device.",
+      NotReadableError: "The camera is busy in another app. Close it and try again.",
+    };
+    setStatus(messages[err.name] || "Couldn't start the camera.", true);
+    return;
+  }
+  // The user may have switched back to Upload while the permission prompt was open
+  if (els.webcamPanel.hidden) {
+    cam.stream.getTracks().forEach((t) => t.stop());
+    cam.stream = null;
+    els.cameraBtn.disabled = false;
+    return;
+  }
+
+  els.video.srcObject = cam.stream;
+  await els.video.play();
+  await useLandmarkerMode("VIDEO");
+  runId++; // cancel any photo still being analyzed
+
+  els.canvas.width = els.video.videoWidth;
+  els.canvas.height = els.video.videoHeight;
+  els.canvas.classList.add("is-mirrored"); // selfie view on screen only
+  els.stage.hidden = false;
+  els.results.hidden = false;
+  els.faceList.replaceChildren();
+  els.poseResult.textContent = "";
+  els.downloadBtn.disabled = true;
+  Object.assign(cam, { running: true, frozen: false, tracks: [], pose: null, lastClassify: 0, lastPose: 0 });
+
+  els.cameraBtn.textContent = "Stop camera";
+  els.cameraBtn.disabled = false;
+  els.captureBtn.textContent = "Capture";
+  els.captureBtn.disabled = false;
+  setStatus("Camera on. Crowns update live.");
+  cam.raf = requestAnimationFrame(webcamFrame);
+}
+
+function stopCamera(message = "Camera off.") {
+  if (!cam.stream) return;
+  cancelAnimationFrame(cam.raf);
+  cam.stream.getTracks().forEach((t) => t.stop());
+  cam.stream = null;
+  cam.running = false;
+  els.video.srcObject = null;
+  els.cameraBtn.textContent = "Start camera";
+  els.captureBtn.textContent = "Capture";
+  els.captureBtn.disabled = true;
+  // Keep the last frame on screen so a captured photo can still be downloaded
+  setStatus(message);
+}
+
+function webcamFrame(now) {
+  if (!cam.running) return;
+  cam.raf = requestAnimationFrame(webcamFrame);
+  if (cam.frozen || els.video.readyState < 2) return;
+
+  // Step 2 on this frame: find faces, then match each one to the face it was last frame
+  const faces = detectFaces(els.video, now);
+  followFaces(faces, now);
+
+  // Steps 3–4 and 7, throttled. They run in the background while frames keep drawing.
+  if (!cam.classifyBusy && now - cam.lastClassify >= CLASSIFY_EVERY_MS) classifyWebcamFaces(faces);
+  if (!cam.poseBusy && now - cam.lastPose >= POSE_EVERY_MS) classifyWebcamPose();
+
+  // Steps 5–6: draw the frame with crowns from the latest (smoothed) predictions
+  renderScene(els.video, faces, cam.pose, now);
+}
+
+// Faces don't come back in a fixed order, so each face is paired with the nearest face
+// from the previous frame. That lets its averaged prediction follow it around.
+function followFaces(faces, now) {
+  const unclaimed = new Set(cam.tracks);
+  for (const face of faces) {
+    let best = null;
+    let bestDist = face.box.side * 0.6; // farther than this counts as a new face
+    for (const t of unclaimed) {
+      const d = Math.hypot(t.cx - face.box.cx, t.cy - face.box.cy);
+      if (d < bestDist) {
+        best = t;
+        bestDist = d;
+      }
+    }
+    if (best) unclaimed.delete(best);
+    else cam.tracks.push((best = { probs: null, crown: null, crop: null }));
+    Object.assign(best, { cx: face.box.cx, cy: face.box.cy, lastSeen: now });
+    face.track = best;
+    face.probs = best.probs;
+    face.crown = best.crown;
+    face.crop = best.crop;
+  }
+  // Forget faces that left the frame more than a second ago
+  cam.tracks = cam.tracks.filter((t) => now - t.lastSeen < 1000);
+}
+
+async function classifyWebcamFaces(faces) {
+  cam.classifyBusy = true;
+  cam.lastClassify = performance.now();
+  try {
+    // Crop every face from the same frame first, then classify them one by one
+    const crops = faces.map((face) => cropFace(els.video, face.box));
+    for (let i = 0; i < faces.length; i++) {
+      const probs = await predictCrop(crops[i]);
+      const t = faces[i].track;
+      // Running average, then hysteresis: turning a crown on needs CROWN_THRESHOLD,
+      // but it only turns off below CROWN_OFF_THRESHOLD
+      t.probs = t.probs
+        ? Object.fromEntries(Object.keys(probs).map((k) => [k, t.probs[k] * (1 - SMOOTHING) + probs[k] * SMOOTHING]))
+        : probs;
+      t.crown = crownColor(t.probs, t.crown ? CROWN_OFF_THRESHOLD : CROWN_THRESHOLD);
+      t.crop = crops[i];
+      Object.assign(faces[i], { probs: t.probs, crown: t.crown, crop: t.crop });
+    }
+    if (cam.running && !cam.frozen) showResults(faces, cam.pose);
+  } catch (err) {
+    console.error(err);
+  } finally {
+    cam.classifyBusy = false;
+  }
+}
+
+async function classifyWebcamPose() {
+  cam.poseBusy = true;
+  cam.lastPose = performance.now();
+  try {
+    // PoseNet reads a canvas more reliably than a <video>, so snapshot the frame first
+    const frame = document.createElement("canvas");
+    frame.width = els.video.videoWidth;
+    frame.height = els.video.videoHeight;
+    frame.getContext("2d").drawImage(els.video, 0, 0);
+    cam.pose = await classifyPose(frame);
+  } catch (err) {
+    console.error(err);
+  } finally {
+    cam.poseBusy = false;
+  }
+}
+
+// Capture freezes the current crowned frame so it can be downloaded; Resume goes live again
+function toggleCapture() {
+  cam.frozen = !cam.frozen;
+  els.captureBtn.textContent = cam.frozen ? "Resume" : "Capture";
+  els.downloadBtn.disabled = !cam.frozen;
+  setStatus(cam.frozen ? "Captured. Download it, or resume the live view." : "Camera on. Crowns update live.");
+}
+
+function switchMode(mode) {
+  const webcam = mode === "webcam";
+  els.tabUpload.setAttribute("aria-selected", String(!webcam));
+  els.tabWebcam.setAttribute("aria-selected", String(webcam));
+  els.uploadPanel.hidden = webcam;
+  els.webcamPanel.hidden = !webcam;
+  if (!webcam) stopCamera("");
+  runId++; // cancel any photo still being analyzed
+  els.canvas.classList.remove("is-mirrored");
+  els.stage.hidden = true;
+  els.results.hidden = true;
+  els.downloadBtn.disabled = true;
+  if (els.loading.hidden) {
+    setStatus(webcam ? "Start the camera to go live." : "Ready. Choose a photo to get started.");
+  }
+}
+
+els.tabUpload.addEventListener("click", () => switchMode("upload"));
+els.tabWebcam.addEventListener("click", () => switchMode("webcam"));
+els.cameraBtn.addEventListener("click", () => (cam.running ? stopCamera() : startCamera()));
+els.captureBtn.addEventListener("click", toggleCapture);
+// Don't keep the camera running in a background tab
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && cam.running) stopCamera("Camera turned off while the tab was hidden.");
+});
 
 // ---------- Download ----------
 els.downloadBtn.addEventListener("click", () => {

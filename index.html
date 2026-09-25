@@ -17,7 +17,7 @@
   <main class="page">
     <header class="header">
       <h1>Crown Me <span aria-hidden="true">👑</span></h1>
-      <p class="tagline">Upload a photo. If Cassius is in it, he gets a crown.</p>
+      <p class="tagline">Upload a photo or turn on your webcam. If Cassius is there, he gets a crown.</p>
       <p class="privacy">Your photo never leaves your browser.</p>
     </header>
 
@@ -30,12 +30,25 @@
       </ul>
     </section>
 
-    <section class="input-panel" id="upload-panel">
+    <div class="tabs" role="tablist" aria-label="Input mode">
+      <button type="button" class="tab" role="tab" id="tab-upload" aria-selected="true" aria-controls="upload-panel">Upload photo</button>
+      <button type="button" class="tab" role="tab" id="tab-webcam" aria-selected="false" aria-controls="webcam-panel">Live webcam</button>
+    </div>
+
+    <section class="input-panel" id="upload-panel" role="tabpanel" aria-labelledby="tab-upload">
       <label class="dropzone is-disabled" id="dropzone">
         <input type="file" id="file-input" accept="image/*" disabled />
         <span class="dropzone-button">Choose a photo</span>
         <span class="dropzone-hint">or drag one here</span>
       </label>
+    </section>
+
+    <section class="input-panel" id="webcam-panel" role="tabpanel" aria-labelledby="tab-webcam" hidden>
+      <div class="camera-controls">
+        <button type="button" class="btn" id="camera-btn" disabled>Start camera</button>
+        <button type="button" class="btn btn-secondary" id="capture-btn" disabled>Capture</button>
+      </div>
+      <video id="video" playsinline muted hidden></video>
     </section>
 
     <p class="status" id="status" role="status" aria-live="polite"></p>

@@ -1,6 +1,6 @@
 # Crown Me 👑
 
-Crown Me is a small static web app. Upload a photo and it finds every face in it, checks which faces are Cassius with a Teachable Machine image model, and draws a crown on his head only. The crown's color shows his expression:
+Crown Me is a small static web app. Upload a photo or turn on your webcam, and it finds every face, checks which faces are Cassius with a Teachable Machine image model, and draws a crown on his head only. The crown's color shows his expression:
 
 | Prediction | Crown |
 |---|---|
@@ -10,14 +10,21 @@ Crown Me is a small static web app. Upload a photo and it finds every face in it
 
 A face gets a crown only when the model is at least 80% sure it's Cassius (happy + neutral combined). A second Teachable Machine model (pose) looks at the whole photo. If it sees `arms_up` with at least 60% confidence, sparkles appear around the crown.
 
-Everything runs in the browser. Photos are never uploaded anywhere.
+Everything runs in the browser. Photos and camera frames are never uploaded anywhere.
+
+## Two modes
+
+- **Upload photo**: choose a photo or drag one onto the page. You get the crowned image and a results panel listing every face with its prediction.
+- **Live webcam**: click **Start camera** and allow access. Crowns follow your head live. Click **Capture** to freeze a frame, then **Download image** to save it. **Resume** goes live again.
+  - The camera needs a secure page. `localhost`/`127.0.0.1` (Live Server) and Vercel's `https://` both qualify. Opening the page from another device via your laptop's IP address (`http://192.168…`) won't allow the camera.
+  - The live view is mirrored like a selfie camera. Downloads are saved unmirrored, the way the scene actually looks.
 
 ## Files
 
 | File | What it does |
 |---|---|
 | `index.html` | Page layout; loads TensorFlow.js and the Teachable Machine libraries |
-| `app.js` | The full pipeline (load models → find faces → crop → classify → draw), commented step by step |
+| `app.js` | The full pipeline (load models → find faces → crop → classify → draw), commented step by step, plus the webcam loop |
 | `style.css` | Styling, including the mobile layout |
 
 No frameworks, no npm, no build step.
@@ -54,7 +61,7 @@ Add `?debug=1` to the URL, e.g. `http://127.0.0.1:5500/?debug=1`. You'll see:
 - the five landmarks used to place the crown (10, 33, 263, 234, 454),
 - a thumbnail of the exact 224×224 image the model classified, in the results panel.
 
-Use it to check that the crops look like your training images. It's also handy for journal screenshots.
+Use it to check that the crops look like your training images. It's also handy for journal screenshots. In webcam mode the debug labels appear backwards because the live view is mirrored.
 
 ## Models and libraries
 
@@ -78,6 +85,9 @@ Each entry says whether the choice was familiar (what this project or Teachable 
 - **Colors: gold = happy, green = neutral** (changed during planning; the original spec had them the other way around).
 - **Pose "no body" check** (new). PoseNet always returns a pose, even for a face-only close-up (a selfie scored 0.40 overall). So the app only trusts the pose when both shoulders are at least 30% visible.
 - **Photos capped at 1600 px on the long edge** (new). This keeps large phone photos fast. Downloads use that resolution.
+- **Webcam: one pipeline, throttled** (new). Face landmarks run every frame so crowns track smoothly. The face classifier runs about every 400 ms and the pose model about every second, so slower laptops and phones stay responsive. Each face is matched to the nearest face from the previous frame, so its predictions follow it.
+- **Webcam: smoothing and hysteresis** (new). Each face's probabilities are averaged over time. A crown turns on at 0.8 and only turns off below 0.7, so it doesn't flicker when confidence hovers near the threshold.
+- **Webcam: mirrored with CSS only** (new). Everything is computed on the real, unmirrored frame. Only the on-screen canvas is flipped with `transform: scaleX(-1)`. This avoids juggling two coordinate systems, where the crown tilt would flip sign.
 - **No storage, no backend** (from the spec). Nothing is saved between visits.
 
 ## Crop fidelity (tested)
