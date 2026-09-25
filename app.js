@@ -34,8 +34,9 @@ const CROWN_COLORS = {
   green: { light: "#b6f5cc", mid: "#2ecc71", dark: "#1e8449", outline: "#0f4d2a" },
 };
 
-// Add ?debug=1 to the URL to see crop boxes, key landmarks, and the exact crops the model sees
-const DEBUG = new URLSearchParams(location.search).has("debug");
+// "Under the hood" view: crop boxes, key landmarks, and the exact crops the model sees.
+// Toggle it with the button, or start with it on by adding ?debug=1 to the URL.
+let debug = new URLSearchParams(location.search).has("debug");
 
 // ---------- Page elements ----------
 const $ = (id) => document.getElementById(id);
@@ -47,6 +48,8 @@ const els = {
   stage: $("stage"),
   canvas: $("result"),
   downloadBtn: $("download-btn"),
+  debugBtn: $("debug-btn"),
+  debugLegend: $("debug-legend"),
   results: $("results"),
   faceList: $("face-list"),
   poseResult: $("pose-result"),
@@ -62,6 +65,7 @@ const ctx = els.canvas.getContext("2d");
 
 let faceLandmarker, imageModel, poseModel;
 let runId = 0; // lets a newer upload cancel an older one that's still running
+let lastPhoto = null; // the latest photo result, so the "Under the hood" toggle can redraw it
 let landmarkerMode = "IMAGE"; // FaceLandmarker needs "IMAGE" for photos and "VIDEO" for the webcam
 
 function setStatus(message, isError = false) {
@@ -176,7 +180,7 @@ async function handleFile(file) {
   try {
     await useLandmarkerMode("IMAGE");
     if (myRun !== runId) return;
-    const faces = detectFaces(source);
+    const faces = detectFacesTiled(source);
     const classified = [];
     for (const face of faces) classified.push(await classifyFace(source, face));
     const pose = await classifyPose(source);
@@ -185,6 +189,7 @@ async function handleFile(file) {
     for (const face of classified) face.crown = crownColor(face.probs);
     renderScene(source, classified, pose);
     showResults(classified, pose);
+    lastPhoto = { source, faces: classified, pose };
     els.downloadBtn.disabled = false;
 
     if (faces.length === 0) {
@@ -217,6 +222,46 @@ function detectFaces(source, timestamp) {
     const points = landmarks.map((p) => ({ x: p.x * w, y: p.y * h }));
     return { points, box: cropBox(points) };
   });
+}
+
+// The face detector shrinks the whole photo to a small square, so in wide group shots some faces
+// end up too small to find. For photos we also scan four overlapping sections (each 60% of the
+// width and height, so every face appears larger) and add any face the full-photo pass missed.
+// Sections can produce false faces (in testing, a hand with a ring), so each new face must be
+// found again when we zoom in on it before it counts.
+function confirmFace(source, box) {
+  const side = box.side * 2;
+  const zoom = document.createElement("canvas");
+  zoom.width = zoom.height = 256;
+  const c = zoom.getContext("2d");
+  c.fillStyle = "#000";
+  c.fillRect(0, 0, 256, 256);
+  c.drawImage(source, box.cx - side / 2, box.cy - side / 2, side, side, 0, 0, 256, 256);
+  return faceLandmarker.detect(zoom).faceLandmarks.length > 0;
+}
+
+function detectFacesTiled(source) {
+  const found = detectFaces(source);
+  const tw = Math.round(source.width * 0.6);
+  const th = Math.round(source.height * 0.6);
+  for (const [fx, fy] of [[0, 0], [0.4, 0], [0, 0.4], [0.4, 0.4]]) {
+    const x = Math.round(source.width * fx);
+    const y = Math.round(source.height * fy);
+    const tile = document.createElement("canvas");
+    tile.width = tw;
+    tile.height = th;
+    tile.getContext("2d").drawImage(source, x, y, tw, th, 0, 0, tw, th);
+    for (const face of detectFaces(tile)) {
+      const points = face.points.map((p) => ({ x: p.x + x, y: p.y + y }));
+      const box = cropBox(points);
+      // Skip faces we already have (same face seen in the full photo or another section)
+      const duplicate = found.some(
+        (f) => Math.hypot(f.box.cx - box.cx, f.box.cy - box.cy) < Math.max(f.box.side, box.side) * 0.5
+      );
+      if (!duplicate && confirmFace(source, box)) found.push({ points, box });
+    }
+  }
+  return found;
 }
 
 // ---------- Step 3: Crop a square around the face (forehead to chin, ear to ear) ----------
@@ -326,7 +371,7 @@ function renderScene(source, faces, pose, time = 0) {
     if (pose && pose.sparkles) drawSparkles(ctx, frame.width, time);
     ctx.restore();
   }
-  if (DEBUG) drawDebug(faces);
+  if (debug) drawDebug(faces);
 }
 
 // ---------- Step 5: Work out where the crown goes ----------
@@ -482,7 +527,7 @@ function showResults(faces, pose) {
         return li;
       }
       const [label, probability] = topClass(face.probs);
-      if (DEBUG && face.crop) {
+      if (debug && face.crop) {
         face.crop.className = "face-thumb";
         li.append(face.crop);
       }
@@ -563,6 +608,7 @@ async function startCamera() {
   await els.video.play();
   await useLandmarkerMode("VIDEO");
   runId++; // cancel any photo still being analyzed
+  lastPhoto = null;
 
   els.canvas.width = els.video.videoWidth;
   els.canvas.height = els.video.videoHeight;
@@ -691,6 +737,7 @@ function toggleCapture() {
 }
 
 function switchMode(mode) {
+  lastPhoto = null;
   const webcam = mode === "webcam";
   els.tabUpload.setAttribute("aria-selected", String(!webcam));
   els.tabWebcam.setAttribute("aria-selected", String(webcam));
@@ -715,6 +762,21 @@ els.captureBtn.addEventListener("click", toggleCapture);
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && cam.running) stopCamera("Camera turned off while the tab was hidden.");
 });
+
+// ---------- Under the hood toggle ----------
+function setDebug(on) {
+  debug = on;
+  els.debugBtn.setAttribute("aria-pressed", String(on));
+  els.debugBtn.textContent = on ? "Hide under the hood" : "Under the hood";
+  els.debugLegend.hidden = !on;
+  // Photos are redrawn right away; the webcam picks it up on its next frame
+  if (lastPhoto && !cam.running) {
+    renderScene(lastPhoto.source, lastPhoto.faces, lastPhoto.pose);
+    showResults(lastPhoto.faces, lastPhoto.pose);
+  }
+}
+els.debugBtn.addEventListener("click", () => setDebug(!debug));
+setDebug(debug);
 
 // ---------- Download ----------
 els.downloadBtn.addEventListener("click", () => {

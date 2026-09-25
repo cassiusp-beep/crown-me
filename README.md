@@ -54,9 +54,9 @@ vercel            # from inside this folder; answers: no build command, current 
 vercel --prod
 ```
 
-## Debug mode
+## Under the hood
 
-Add `?debug=1` to the URL, e.g. `http://127.0.0.1:5500/?debug=1`. You'll see:
+Click **Under the hood** under the image (or add `?debug=1` to the URL to start with it on). You'll see:
 - the square crop around each face (cyan = crowned, pink = not crowned),
 - the five landmarks used to place the crown (10, 33, 263, 234, 454),
 - a thumbnail of the exact 224×224 image the model classified, in the results panel.
@@ -80,6 +80,7 @@ Each entry says whether the choice was familiar (what this project or Teachable 
 - **One MediaPipe instance, GPU with CPU fallback** (new). Some phones and older laptops can't run the GPU path, so the app falls back to CPU instead of failing.
 - **Label names repaired** (new). The hosted model saves its labels cut off as `cassius_happ...` and `cassius_neut...`. The app matches the start of each name and maps it back to the full name. Without this, no crown would ever appear.
 - **Crown rule: combined Cassius score ≥ 0.8** (new, changed from the original spec). The original rule was "top class ≥ 0.6". Now `happy + neutral` decides whether it's Cassius, and the larger of the two picks the color. A face scored 45% happy / 45% neutral is clearly Cassius, but the original rule would have given it no crown. The threshold was raised from 0.6 to 0.8 after testing showed strangers being crowned (see "Crop fidelity").
+- **Photos: scan overlapping sections too** (new). MediaPipe's detector shrinks the whole photo to a small square, so in wide group shots a face can end up too small to find. In one group selfie it missed Cassius entirely at its default settings. For photos, the app also scans four overlapping sections (each 60% of the width and height) and adds any face the full-photo pass missed. Each new face must be found again when zoomed in, which removed the one false face this added across the 330 training photos (a hand with a ring). A lower detection cutoff was also tested: 0.3 still missed the face and 0.2 found it, but it's a blunter tool. The webcam doesn't use section scanning, because faces there are close and speed matters.
 - **Crop: landmark bounding box + 40% padding** (changed from the spec's 15%). The bounding box of all 478 face landmarks runs forehead to chin and ear to ear. It's made square, padded, and resized to 224×224. Testing showed 40% matches the training images better than 15% (see "Crop fidelity"). This is a stopgap until the model is retrained.
 - **Crown placement** (from the spec). Anchor at landmark 10, width 1.2× the distance from 234 to 454, rotated by the eye-corner angle (33 → 263), lifted slightly above the forehead. Drawn procedurally: 5 points, a band, and jewels.
 - **Colors: gold = happy, green = neutral** (changed during planning; the original spec had them the other way around).
@@ -101,13 +102,15 @@ All 330 image-model training photos were run through the app's face-crop step. T
 | Face crop, 15% padding, threshold 0.6 (original spec) | 198 / 201 | 108 / 126 |
 | Face crop, 40% padding, threshold 0.6 | 199 / 201 | 115 / 126 |
 | **Face crop, 40% padding, threshold 0.8 (current)** | **199 / 201** | **116 / 126** |
+| Face crop, 150% padding, threshold 0.8 | 176 / 201 | 109 / 126 |
 
-The training images are full screenshots rather than tight face crops, so the model learned the scenes and framing of Cassius photos more than his face. Most of the strangers it wrongly crowns get 97–100% confidence, so no threshold filters them all out. Example: a stranger from the pose dataset was crowned at 61% under the original settings; with the current settings he's rejected at 100% not_cassius. The most reliable fix is to retrain the model on crops made the same way the app makes them. The `?debug=1` thumbnails show exactly what those crops look like.
+The training images are full screenshots rather than tight face crops, so the model learned the scenes and framing of Cassius photos more than his face. Most of the strangers it wrongly crowns get 97–100% confidence, so no threshold filters them all out. Example: a stranger from the pose dataset was crowned at 61% under the original settings; with the current settings he's rejected at 100% not_cassius. Wider crops don't help: 150% padding recognized Cassius in one group selfie where 40% didn't, but across all 330 photos it did worse, and it read "happy" correctly only 12 times out of 120. The most reliable fix is to retrain the model on crops made the same way the app makes them. The `?debug=1` thumbnails show exactly what those crops look like.
 
 ## Known limitations
 
 - **Strangers can still get a crown** (about 1 in 12 in testing). The one image model decides both identity and expression, from 330 photos. Small faces in full-body shots are the most likely to be misread.
-- **Small or distant faces may be missed.** MediaPipe's face landmarker is built for faces within a couple of meters of the camera. It finds at most 5 faces.
+- **Small or distant faces may be missed.** MediaPipe's face landmarker is built for close-up faces. Section scanning helps with photos, but very small faces can still be missed. It finds at most 5 faces per pass.
+- **Cassius in group photos often isn't recognized**, even when detected. His face crop in a group selfie looks nothing like the training screenshots. Retraining (see "Crop fidelity") is the fix.
 - **Pose uses one person, in the middle.** PoseNet reads a single body from the center square of the photo. Someone off to the side isn't seen, and in a group photo the person in the middle decides the sparkles.
 - **Sparkles are conservative.** Raised hands that fall outside the center square don't count, so about 2 in 5 real arms-up photos get no sparkles. In webcam mode, step back so your hands are in frame.
 - **HEIC photos** (iPhone) may not open in desktop Chrome. Convert them to JPG first. Phone browsers usually convert them automatically.

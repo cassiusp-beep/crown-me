@@ -57,7 +57,14 @@
       <canvas id="result" aria-label="Your photo with crowns drawn on it"></canvas>
       <div class="actions">
         <button type="button" id="download-btn" class="btn" disabled>Download image</button>
+        <button type="button" id="debug-btn" class="btn btn-secondary" aria-pressed="false">Under the hood</button>
       </div>
+      <p class="debug-legend" id="debug-legend" hidden>
+        Boxes show the square crop each face is cut to before the model sees it
+        (<span class="legend-cyan">cyan</span> = crowned, <span class="legend-pink">pink</span> = no crown).
+        Dots are the landmarks that place the crown: forehead, outer eye corners, and face sides.
+        The thumbnails in Results are the exact 224×224 images the model classified.
+      </p>
     </section>
 
     <section class="results" id="results" aria-live="polite" hidden>

@@ -259,6 +259,30 @@ body {
   margin-top: 12px;
 }
 
+.actions {
+  flex-wrap: wrap;
+}
+
+.debug-legend {
+  margin: 12px 0 0;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.legend-cyan {
+  color: #008ba3;
+  font-weight: 600;
+}
+
+.legend-pink {
+  color: #d81b60;
+  font-weight: 600;
+}
+
 /* Results panel */
 .results {
   margin-top: 24px;
