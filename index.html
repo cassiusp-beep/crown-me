@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Crown Me</title>
+  <meta name="description" content="Upload a photo and Crown Me finds Cassius and gives him a crown that matches his expression." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>👑</text></svg>" />
+  <link rel="stylesheet" href="style.css" />
+
+  <!-- Teachable Machine libraries (classic scripts: they expose the tmImage and tmPose globals) -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@1.3.1/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@0.8/dist/teachablemachine-image.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/pose@0.8/dist/teachablemachine-pose.min.js"></script>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <h1>Crown Me <span aria-hidden="true">👑</span></h1>
+      <p class="tagline">Upload a photo. If Cassius is in it, he gets a crown.</p>
+      <p class="privacy">Your photo never leaves your browser.</p>
+    </header>
+
+    <section class="loading" id="loading" aria-live="polite">
+      <p class="loading-title">Loading models…</p>
+      <ul class="checklist">
+        <li data-model="face" data-state="loading">Face detector</li>
+        <li data-model="image" data-state="loading">Face classifier</li>
+        <li data-model="pose" data-state="loading">Pose model</li>
+      </ul>
+    </section>
+
+    <section class="input-panel" id="upload-panel">
+      <label class="dropzone is-disabled" id="dropzone">
+        <input type="file" id="file-input" accept="image/*" disabled />
+        <span class="dropzone-button">Choose a photo</span>
+        <span class="dropzone-hint">or drag one here</span>
+      </label>
+    </section>
+
+    <p class="status" id="status" role="status" aria-live="polite"></p>
+
+    <section class="stage" id="stage" hidden>
+      <canvas id="result" aria-label="Your photo with crowns drawn on it"></canvas>
+      <div class="actions">
+        <button type="button" id="download-btn" class="btn" disabled>Download image</button>
+      </div>
+    </section>
+
+    <section class="results" id="results" aria-live="polite" hidden>
+      <h2>Results</h2>
+      <ul class="face-list" id="face-list"></ul>
+      <p class="pose-result" id="pose-result"></p>
+    </section>
+  </main>
+
+  <!-- The pipeline. A module script runs after the classic scripts above, so tmImage and tmPose already exist. -->
+  <script type="module" src="app.js"></script>
+</body>
+</html>
