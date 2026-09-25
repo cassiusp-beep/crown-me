@@ -8,7 +8,7 @@ Crown Me is a small static web app. Upload a photo or turn on your webcam, and i
 | `cassius_neutral` | green |
 | `not_cassius` | none |
 
-A face gets a crown only when the model is at least 80% sure it's Cassius (happy + neutral combined). A second Teachable Machine model (pose) looks at the whole photo. If it sees `arms_up` with at least 60% confidence, sparkles appear around the crown.
+A face gets a crown only when the model is at least 80% sure it's Cassius (happy + neutral combined). A second Teachable Machine model (pose) looks at the center square of the photo, the same framing it was trained on. If your wrists are visible and it sees `arms_up` with at least 60% confidence, sparkles appear around the crown.
 
 Everything runs in the browser. Photos and camera frames are never uploaded anywhere.
 
@@ -83,7 +83,8 @@ Each entry says whether the choice was familiar (what this project or Teachable 
 - **Crop: landmark bounding box + 40% padding** (changed from the spec's 15%). The bounding box of all 478 face landmarks runs forehead to chin and ear to ear. It's made square, padded, and resized to 224×224. Testing showed 40% matches the training images better than 15% (see "Crop fidelity"). This is a stopgap until the model is retrained.
 - **Crown placement** (from the spec). Anchor at landmark 10, width 1.2× the distance from 234 to 454, rotated by the eye-corner angle (33 → 263), lifted slightly above the forehead. Drawn procedurally: 5 points, a band, and jewels.
 - **Colors: gold = happy, green = neutral** (changed during planning; the original spec had them the other way around).
-- **Pose "no body" check** (new). PoseNet always returns a pose, even for a face-only close-up (a selfie scored 0.40 overall). So the app only trusts the pose when both shoulders are at least 30% visible.
+- **Pose input: center square** (new; the first version passed the whole photo). Teachable Machine trains the pose model on the center square of each photo, and the model reads PoseNet's raw 17×17 heatmap grid, so where the body sits in the square matters. On the 133 pose training photos, whole photos got 49/67 arms_up and 25/66 arms_down right. The center square gets 64/67 and 66/66.
+- **Pose "arms visible" check** (new; replaced a shoulders check). PoseNet always returns a pose. When the arms are out of frame (a typical webcam shot) it guesses their position, and those guesses often read as `arms_up`. The app only trusts the pose when at least one wrist scores ≥ 0.3. Tested on arms-down photos cropped to head and shoulders, like a webcam frame: false sparkles dropped from 26/66 to 2/66. Trade-off: real arms-up photos get sparkles 40/67 times instead of 63/67, because the center square often cuts off raised hands. An elbow-based check kept more true sparkles but still gave 11–14/66 false ones.
 - **Photos capped at 1600 px on the long edge** (new). This keeps large phone photos fast. Downloads use that resolution.
 - **Webcam: one pipeline, throttled** (new). Face landmarks run every frame so crowns track smoothly. The face classifier runs about every 400 ms and the pose model about every second, so slower laptops and phones stay responsive. Each face is matched to the nearest face from the previous frame, so its predictions follow it.
 - **Webcam: smoothing and hysteresis** (new). Each face's probabilities are averaged over time. A crown turns on at 0.8 and only turns off below 0.7, so it doesn't flicker when confidence hovers near the threshold.
@@ -107,6 +108,7 @@ The training images are full screenshots rather than tight face crops, so the mo
 
 - **Strangers can still get a crown** (about 1 in 12 in testing). The one image model decides both identity and expression, from 330 photos. Small faces in full-body shots are the most likely to be misread.
 - **Small or distant faces may be missed.** MediaPipe's face landmarker is built for faces within a couple of meters of the camera. It finds at most 5 faces.
-- **Pose uses one person.** PoseNet reads a single body. In a group photo, someone else's raised arms can trigger your sparkles.
+- **Pose uses one person, in the middle.** PoseNet reads a single body from the center square of the photo. Someone off to the side isn't seen, and in a group photo the person in the middle decides the sparkles.
+- **Sparkles are conservative.** Raised hands that fall outside the center square don't count, so about 2 in 5 real arms-up photos get no sparkles. In webcam mode, step back so your hands are in frame.
 - **HEIC photos** (iPhone) may not open in desktop Chrome. Convert them to JPG first. Phone browsers usually convert them automatically.
 - **First load is about 15–20 MB** of models, so it takes a moment on mobile data.

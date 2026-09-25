@@ -15,7 +15,7 @@ const FACE_MODEL_URL =
 
 const CROWN_THRESHOLD = 0.8; // P(Cassius) needed for a crown (raised from 0.6: see README "Crop fidelity")
 const POSE_THRESHOLD = 0.6; // arms_up confidence needed for sparkles
-const SHOULDER_MIN_SCORE = 0.3; // both shoulders must be this visible to count as "a body"
+const WRIST_MIN_SCORE = 0.3; // at least one wrist must be this visible before the pose is trusted
 const CROP_PADDING = 0.4; // extra margin around the face crop (40% matched the training photos better than 15%)
 const CROP_SIZE = 224; // Teachable Machine image models take 224x224 input
 const MAX_EDGE = 1600; // big phone photos are scaled down to this long edge for speed
@@ -282,15 +282,28 @@ function crownColor(probs, threshold = CROWN_THRESHOLD) {
   return probs.cassius_happy > probs.cassius_neutral ? "gold" : "green";
 }
 
-// ---------- Step 7: Run the pose model on the whole image ----------
-// PoseNet always returns *some* pose, even for a face-only close-up, so we only trust it
-// when both shoulders are clearly visible. Otherwise we skip quietly.
+// ---------- Step 7: Run the pose model on the image ----------
+// Teachable Machine trained the pose model on the center square of each photo, and the model
+// reads PoseNet's raw heatmap grid, so position in the square matters. We crop the same way.
+// (Tested on the 133 pose training photos: whole photos got 25/66 arms_down right, the center square 66/66.)
+function centerSquare(source) {
+  const side = Math.min(source.width, source.height);
+  const square = document.createElement("canvas");
+  square.width = square.height = side;
+  square.getContext("2d").drawImage(
+    source, (source.width - side) / 2, (source.height - side) / 2, side, side, 0, 0, side, side
+  );
+  return square;
+}
+
+// PoseNet always returns *some* pose. If the arms are out of frame it guesses where they are,
+// and those guesses can look like "arms up". So we only trust the pose when a wrist is visible.
 async function classifyPose(source) {
-  const { pose, posenetOutput } = await poseModel.estimatePose(source);
-  const shoulders = pose
-    ? pose.keypoints.filter((k) => k.part === "leftShoulder" || k.part === "rightShoulder")
+  const { pose, posenetOutput } = await poseModel.estimatePose(centerSquare(source));
+  const wrists = pose
+    ? pose.keypoints.filter((k) => k.part === "leftWrist" || k.part === "rightWrist")
     : [];
-  if (shoulders.length < 2 || shoulders.some((k) => k.score < SHOULDER_MIN_SCORE)) {
+  if (!wrists.some((k) => k.score >= WRIST_MIN_SCORE)) {
     return null;
   }
   const predictions = await poseModel.predict(posenetOutput);
@@ -495,7 +508,7 @@ function showResults(faces, pose) {
   }
   els.poseResult.textContent = pose
     ? `Pose: ${pose.label} (${pct(pose.probability)})${pose.sparkles ? " ✨" : ""}`
-    : "Pose: no body detected";
+    : "Pose: arms not in view";
   els.results.hidden = false;
 }
 
